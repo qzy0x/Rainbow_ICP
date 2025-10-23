@@ -12,7 +12,9 @@ import pyperclip
 import requests
 import time
 import uuid
+import unicodedata
 requests.packages.urllib3.disable_warnings()
+
 init(autoreset=True)
 colors = [Fore.RED, Fore.GREEN, Fore.YELLOW, Fore.BLUE, Fore.MAGENTA, Fore.CYAN]
 
@@ -117,7 +119,7 @@ def checkImage(uuid_token, secretKey, clientUid, pointJson,token):
     return False
 
 
-def query(sign, uuid_token, domain,token):
+def query(sign, uuid_token, domain,token, service_type=1):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": "https://beian.miit.gov.cn/",
@@ -132,15 +134,50 @@ def query(sign, uuid_token, domain,token):
         "Content-Type": "application/json",
         "Cookie": "__jsluid_s="+str(uuid.uuid4().hex[:32])
     }
-    data = {"pageNum": "1", "pageSize": "1", "unitName": domain, "serviceType": 1}
+    page_size = 40
+    data = {"pageNum": "1", "pageSize": str(page_size), "unitName": domain, "serviceType": service_type}
     resp = requests.post("https://hlwicpfwc.miit.gov.cn/icpproject_query/api/icpAbbreviateInfo/queryByCondition",
                          headers=headers,verify=False, data=json.dumps(data).replace(" ","")).json()
-    Size = resp["params"]["total"]
-    data = {"pageNum": "1", "pageSize": f"{Size}", "unitName": domain, "serviceType": 1}
-    respp = requests.post("https://hlwicpfwc.miit.gov.cn/icpproject_query/api/icpAbbreviateInfo/queryByCondition",
+    try:
+        total = resp.get("params", {}).get("total", 0) or 0
+        aggregated = resp.get("params", {}).get("list", []) or []
+        if isinstance(total, int) and total > len(aggregated):
+            total_pages = (total + page_size - 1) // page_size
+            for page in range(2, total_pages + 1):
+                print(f'{Fore.LIGHTCYAN_EX}[+]{Style.RESET_ALL} 翻页获取第 {page}/{total_pages} 页 ...')
+                time.sleep(0.5)
+                data = {"pageNum": str(page), "pageSize": str(page_size), "unitName": domain, "serviceType": service_type}
+                page_resp = requests.post("https://hlwicpfwc.miit.gov.cn/icpproject_query/api/icpAbbreviateInfo/queryByCondition",
                          headers=headers,verify=False, data=json.dumps(data).replace(" ","")).json()
-    return respp
+                page_list = page_resp.get("params", {}).get("list", []) or []
+                aggregated.extend(page_list)
+            resp["params"]["list"] = aggregated
+        return resp
+    except Exception:
+        return resp
 
+
+def query_detail_by_app_mini(sign, uuid_token, token, data_id, service_type):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://beian.miit.gov.cn/",
+        "Token": token,
+        "Sign": sign,
+        "Uuid": uuid_token,
+        "Connection": "keep-alive",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Origin": "https://beian.miit.gov.cn",
+        "Content-Type": "application/json",
+        "Cookie": "__jsluid_s="+str(uuid.uuid4().hex[:32])
+    }
+    payload = {"dataId": data_id, "serviceType": service_type}
+    resp = requests.post(
+        "https://hlwicpfwc.miit.gov.cn/icpproject_query/api/icpAbbreviateInfo/queryDetailByAppAndMiniId",
+        headers=headers, verify=False, data=json.dumps(payload).replace(" ", "")
+    ).json()
+    return resp
 
 def main():
     fire_color = Fore.LIGHTRED_EX
@@ -156,10 +193,13 @@ def main():
                                     |_____|               
                     鸣谢: ravizhan"""
     print(fire_color + ascii_art)
-    parser = argparse.ArgumentParser(description="ICP spider - 指定目标参数")
-    parser.add_argument('-t', '--target', required=True, help='目标（例如：域名或公司名字）')
+    parser = argparse.ArgumentParser(description="ICP spider - 查询目标备案信息")
+    parser.add_argument('-t', '--target', required=True, help='目标（例如：域名或公司名或备案号）')
+    parser.add_argument('-type', '--type', default=1, type=int, choices=[1,6,7,8],
+                        help='类型（默认1；网站=1,APP=6,小程序=7,快应用=8）')
     args = parser.parse_args()
     target = args.target
+    service_type = args.type
     crack = Crack()
     token = auth()
     pointjson = None
@@ -173,29 +213,76 @@ def main():
             time.sleep(0.3)
         sign = checkImage(params["uuid"], params["secretKey"], clientUid, pointjson,token)
         time.sleep(0.3)
+        # 在 main() 中，在返回前插入针对 APP/小程序的详情查询
         if sign:
             print(f'{Fore.LIGHTGREEN_EX}[+]{Style.RESET_ALL} 验证码识别成功\n')
-            resp = query(sign, params["uuid"], target,token)
-            return resp
+            resp = query(sign, params["uuid"], target,token, service_type)
+            return resp, service_type, {"sign": sign, "uuid": params["uuid"], "token": token}
         pointjson = None
 
-if __name__ == "__main__":
-    record = main()
-    records = record.get("params", {}).get("list", [])
-    for xx,r in enumerate(records, start=1):
+def output_website_records(records):
+    for xx, r in enumerate(records, start=1):
         domain = r.get("domain", "")
         serviceLicence = r.get("serviceLicence", "")
         natureName = r.get("natureName", "")
         unitName = r.get("unitName", "")
         color = random.choice(colors)
         print(
-            f"{color}[{xx}]{Style.RESET_ALL} "                  # 七彩数字箭头标识
-            f"{Fore.WHITE}{domain:<22}"                             # 域名白色
-            f"{Fore.LIGHTYELLOW_EX}{serviceLicence:<22}"           # 备案号淡黄色
-            f"{Fore.LIGHTGREEN_EX}{natureName:<6}"                # 企业类型淡绿
-            f"{Fore.LIGHTCYAN_EX}{unitName}"                      # 公司名称淡青
+            f"{color}[{xx}]{Style.RESET_ALL} "
+            f"{Fore.WHITE}{domain:<22}"
+            f"{Fore.LIGHTYELLOW_EX}{serviceLicence:<22}"
+            f"{Fore.LIGHTGREEN_EX}{natureName:<6}"
+            f"{Fore.LIGHTCYAN_EX}{unitName}"
         )
     print(f'\n{Fore.LIGHTGREEN_EX}[+]{Style.RESET_ALL} 域名已经全部复制到粘贴板\n')
     domains = [r.get("domain", "") for r in records]
     domains_text = "\n".join(domains)
     pyperclip.copy(domains_text)
+
+def _display_width(s):
+    w = 0
+    for ch in str(s or ""):
+        e = unicodedata.east_asian_width(ch)
+        w += 2 if e in ("F", "W") else 1
+    return w
+
+def pad_display(s, width):
+    s = str(s or "")
+    w = _display_width(s)
+    if w >= width:
+        return s
+    return s + " " * (width - w)
+
+def output_app_mini_records(records, sign, uuid_token, token, service_type):
+    names = []
+    name_w, licence_w, nature_w = 30, 30, 6
+    for xx, r in enumerate(records, start=1):
+        data_id = r.get("dataId")
+        if data_id is None:
+            continue
+        time.sleep(0.15)
+        detail_resp = query_detail_by_app_mini(sign, uuid_token, token, data_id, service_type)
+        params = detail_resp.get("params", {})
+        serviceName = params.get("serviceName", "")
+        serviceLicence = params.get("serviceLicence", "")
+        natureName = params.get("natureName", "")
+        unitName = params.get("unitName", "")
+        names.append(serviceName)
+        color = random.choice(colors)
+        print(
+            f"{color}[{xx}]{Style.RESET_ALL} "
+            f"{Fore.WHITE}{pad_display(serviceName, name_w)}"
+            f"{Fore.LIGHTYELLOW_EX}{pad_display(serviceLicence, licence_w)}"
+            f"{Fore.LIGHTGREEN_EX}{pad_display(natureName, nature_w)}"
+            f"{Fore.LIGHTCYAN_EX}{unitName}"
+        )
+    print(f'\n{Fore.LIGHTGREEN_EX}[+]{Style.RESET_ALL} 内容已经全部复制到粘贴板\n')
+    pyperclip.copy("\n".join([n for n in names if n]))
+
+if __name__ == "__main__":
+    record, service_type, ctx = main()
+    records = record.get("params", {}).get("list", [])
+    if service_type == 1:
+        output_website_records(records)
+    elif service_type in (6, 7):
+        output_app_mini_records(records, ctx["sign"], ctx["uuid"], ctx["token"], service_type)
