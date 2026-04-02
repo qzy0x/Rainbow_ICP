@@ -1,9 +1,5 @@
 colorama==0.4.6
-cryptography==42.0.8
 numpy==2.3.3
-onnxruntime==1.16.3
-opencv_contrib_python==4.9.0.80
-opencv_python==4.9.0.80
-opencv_python_headless==4.9.0.80
+opencv-python==4.9.0.80
 pyperclip==1.9.0
-Requests==2.32.5
+requests==2.32.5
